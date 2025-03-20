@@ -96,7 +96,14 @@ export default function Form({
   const observeFormVisibilityOnMount = useCallback(
     (element: HTMLFormElement) => {
       if (isPrefetchEnabled && router !== null) {
-        mountLinkInstance(element, actionProp, router, PrefetchKind.AUTO)
+        mountLinkInstance(
+          element,
+          actionProp,
+          router,
+          PrefetchKind.AUTO,
+          true,
+          null
+        )
       }
       return () => {
         unmountLinkInstance(element)

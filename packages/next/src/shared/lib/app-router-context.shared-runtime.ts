@@ -1,5 +1,6 @@
 'use client'
 
+import type { LinkInstance } from '../../client/components/links'
 import type { FetchServerResponseResult } from '../../client/components/router-reducer/fetch-server-response'
 import type {
   FocusAndScrollRef,
@@ -150,9 +151,25 @@ export interface AppRouterInstance {
   prefetch(href: string, options?: PrefetchOptions): void
 }
 
+export interface InternalAppRouterInstance {
+  /**
+   * Used by internal Next.js components to navigate, such as <Link />.
+   */
+  navigate(
+    navigationType: 'push' | 'replace',
+    href: string,
+    scroll: boolean,
+    linkInstance: LinkInstance | null
+  ): void
+}
+
 export const AppRouterContext = React.createContext<AppRouterInstance | null>(
   null
 )
+
+export const InternalAppRouterContext =
+  React.createContext<InternalAppRouterInstance | null>(null)
+
 export const LayoutRouterContext = React.createContext<{
   parentTree: FlightRouterState
   parentCacheNode: CacheNode

@@ -1,23 +1,28 @@
 'use client'
 
-import type { NextRouter } from '../../shared/lib/router/router'
-
-import React from 'react'
+import React, { createContext, useContext, useOptimistic, useRef } from 'react'
 import type { UrlObject } from 'url'
-import { formatUrl } from '../../shared/lib/router/utils/format-url'
-import { AppRouterContext } from '../../shared/lib/app-router-context.shared-runtime'
-import type { AppRouterInstance } from '../../shared/lib/app-router-context.shared-runtime'
-import { PrefetchKind } from '../components/router-reducer/router-reducer-types'
-import { useMergedRef } from '../use-merged-ref'
-import { isAbsoluteUrl } from '../../shared/lib/utils'
-import { addBasePath } from '../add-base-path'
-import { warnOnce } from '../../shared/lib/utils/warn-once'
+import type { InternalAppRouterInstance } from '../../shared/lib/app-router-context.shared-runtime'
 import {
+  AppRouterContext,
+  InternalAppRouterContext,
+} from '../../shared/lib/app-router-context.shared-runtime'
+import { formatUrl } from '../../shared/lib/router/utils/format-url'
+import { isLocalURL } from '../../shared/lib/router/utils/is-local-url'
+import { isAbsoluteUrl } from '../../shared/lib/utils'
+import { warnOnce } from '../../shared/lib/utils/warn-once'
+import { addBasePath } from '../add-base-path'
+import type { PENDING_LINK_STATUS } from '../components/links'
+import {
+  IDLE_LINK_STATUS,
   mountLinkInstance,
   onNavigationIntent,
+  unmountLinkForCurrentNavigation,
   unmountLinkInstance,
+  type LinkInstance,
 } from '../components/links'
-import { isLocalURL } from '../../shared/lib/router/utils/is-local-url'
+import { PrefetchKind } from '../components/router-reducer/router-reducer-types'
+import { useMergedRef } from '../use-merged-ref'
 
 type Url = string | UrlObject
 type RequiredKeys<T> = {
@@ -227,11 +232,11 @@ function isModifiedEvent(event: React.MouseEvent): boolean {
 
 function linkClicked(
   e: React.MouseEvent,
-  router: NextRouter | AppRouterInstance,
+  internalRouter: InternalAppRouterInstance,
   href: string,
   as: string,
+  linkInstanceRef: React.RefObject<LinkInstance | null>,
   replace?: boolean,
-  shallow?: boolean,
   scroll?: boolean,
   onNavigate?: OnNavigateEventHandler
 ): void {
@@ -261,7 +266,6 @@ function linkClicked(
   }
 
   e.preventDefault()
-
   const navigate = () => {
     if (onNavigate) {
       let isDefaultPrevented = false
@@ -277,18 +281,12 @@ function linkClicked(
       }
     }
 
-    // If the router is an NextRouter instance it will have `beforePopState`
-    const routerScroll = scroll ?? true
-    if ('beforePopState' in router) {
-      router[replace ? 'replace' : 'push'](href, as, {
-        shallow,
-        scroll: routerScroll,
-      })
-    } else {
-      router[replace ? 'replace' : 'push'](as || href, {
-        scroll: routerScroll,
-      })
-    }
+    internalRouter.navigate(
+      replace ? 'replace' : 'push',
+      as || href,
+      scroll ?? true,
+      linkInstanceRef.current
+    )
   }
 
   React.startTransition(navigate)
@@ -319,7 +317,12 @@ function formatStringOrUrl(urlObjOrString: UrlObject | string): string {
  */
 const Link = React.forwardRef<HTMLAnchorElement, LinkPropsReal>(
   function LinkComponent(props, forwardedRef) {
+    const [linkStatus, setOptimisticLinkStatus] =
+      useOptimistic(IDLE_LINK_STATUS)
+
     let children: React.ReactNode
+
+    const linkInstanceRef = useRef<LinkInstance | null>(null)
 
     const {
       href: hrefProp,
@@ -348,6 +351,12 @@ const Link = React.forwardRef<HTMLAnchorElement, LinkPropsReal>(
     }
 
     const router = React.useContext(AppRouterContext)
+
+    const internalRouter = React.useContext(InternalAppRouterContext)
+
+    if (internalRouter === null) {
+      throw new Error('invariant expected app router to be mounted')
+    }
 
     const prefetchEnabled = prefetchProp !== false
     /**
@@ -554,14 +563,26 @@ const Link = React.forwardRef<HTMLAnchorElement, LinkPropsReal>(
     // a revalidation or refresh.
     const observeLinkVisibilityOnMount = React.useCallback(
       (element: HTMLAnchorElement | SVGAElement) => {
-        if (prefetchEnabled && router !== null) {
-          mountLinkInstance(element, href, router, appPrefetchKind)
+        if (router !== null) {
+          linkInstanceRef.current = mountLinkInstance(
+            element,
+            href,
+            router,
+            appPrefetchKind,
+            prefetchEnabled,
+            setOptimisticLinkStatus
+          )
         }
+
         return () => {
+          if (linkInstanceRef.current) {
+            unmountLinkForCurrentNavigation(linkInstanceRef.current)
+            linkInstanceRef.current = null
+          }
           unmountLinkInstance(element)
         }
       },
-      [prefetchEnabled, href, router, appPrefetchKind]
+      [prefetchEnabled, href, router, appPrefetchKind, setOptimisticLinkStatus]
     )
 
     const mergedRef = useMergedRef(observeLinkVisibilityOnMount, childRef)
@@ -603,7 +624,16 @@ const Link = React.forwardRef<HTMLAnchorElement, LinkPropsReal>(
           return
         }
 
-        linkClicked(e, router, href, as, replace, shallow, scroll, onNavigate)
+        linkClicked(
+          e,
+          internalRouter,
+          href,
+          as,
+          linkInstanceRef,
+          replace,
+          scroll,
+          onNavigate
+        )
       },
       onMouseEnter(e) {
         if (!legacyBehavior && typeof onMouseEnterProp === 'function') {
@@ -670,14 +700,28 @@ const Link = React.forwardRef<HTMLAnchorElement, LinkPropsReal>(
       childProps.href = addBasePath(as)
     }
 
-    return legacyBehavior ? (
+    const link = legacyBehavior ? (
       React.cloneElement(child, childProps)
     ) : (
       <a {...restProps} {...childProps}>
         {children}
       </a>
     )
+
+    return (
+      <LinkStatusContext.Provider value={linkStatus}>
+        {link}
+      </LinkStatusContext.Provider>
+    )
   }
 )
+
+const LinkStatusContext = createContext<
+  typeof PENDING_LINK_STATUS | typeof IDLE_LINK_STATUS
+>(IDLE_LINK_STATUS)
+
+export const useLinkStatus = () => {
+  return useContext(LinkStatusContext)
+}
 
 export default Link

@@ -1,23 +1,58 @@
 'use client'
 
 import React, {
-  use,
-  useEffect,
-  useMemo,
-  useCallback,
   startTransition,
-  useInsertionEffect,
+  use,
+  useCallback,
   useDeferredValue,
+  useEffect,
+  useInsertionEffect,
+  useMemo,
 } from 'react'
+import type { FlightRouterState } from '../../server/app-render/types'
+import type {
+  AppRouterInstance,
+  CacheNode,
+  InternalAppRouterInstance,
+} from '../../shared/lib/app-router-context.shared-runtime'
 import {
   AppRouterContext,
-  LayoutRouterContext,
   GlobalLayoutRouterContext,
+  InternalAppRouterContext,
+  LayoutRouterContext,
 } from '../../shared/lib/app-router-context.shared-runtime'
+import {
+  PathnameContext,
+  PathParamsContext,
+  SearchParamsContext,
+} from '../../shared/lib/hooks-client-context.shared-runtime'
+import type { AppRouterActionQueue } from '../../shared/lib/router/action-queue'
+import { isBot } from '../../shared/lib/router/utils/is-bot'
+import { addBasePath } from '../add-base-path'
+import { useServerActionDispatcher } from '../app-call-server'
+import { hasBasePath } from '../has-base-path'
+import { removeBasePath } from '../remove-base-path'
+import { AppRouterAnnouncer } from './app-router-announcer'
+import {
+  default as DefaultGlobalError,
+  ErrorBoundary,
+  type GlobalErrorComponent,
+} from './error-boundary'
+import { pingVisibleLinks, setLinkForCurrentNavigation } from './links'
+import { useNavFailureHandler } from './nav-failure-handler'
+import { getRedirectTypeFromError, getURLFromRedirectError } from './redirect'
+import { RedirectBoundary } from './redirect-boundary'
+import { isRedirectError, RedirectType } from './redirect-error'
+import { getSelectedParams } from './router-reducer/compute-changed-path'
+import { createHrefFromUrl } from './router-reducer/create-href-from-url'
+import { findHeadInCache } from './router-reducer/reducers/find-head-in-cache'
+import { prefetchReducer } from './router-reducer/reducers/prefetch-reducer'
 import type {
-  CacheNode,
-  AppRouterInstance,
-} from '../../shared/lib/app-router-context.shared-runtime'
+  AppRouterState,
+  ReducerActions,
+  RouterChangeByServerResponse,
+  RouterNavigate,
+} from './router-reducer/router-reducer-types'
 import {
   ACTION_HMR_REFRESH,
   ACTION_NAVIGATE,
@@ -27,42 +62,9 @@ import {
   ACTION_SERVER_PATCH,
   PrefetchKind,
 } from './router-reducer/router-reducer-types'
-import type {
-  AppRouterState,
-  ReducerActions,
-  RouterChangeByServerResponse,
-  RouterNavigate,
-} from './router-reducer/router-reducer-types'
-import { createHrefFromUrl } from './router-reducer/create-href-from-url'
-import {
-  SearchParamsContext,
-  PathnameContext,
-  PathParamsContext,
-} from '../../shared/lib/hooks-client-context.shared-runtime'
-import { useReducer, useUnwrapState } from './use-reducer'
-import {
-  default as DefaultGlobalError,
-  ErrorBoundary,
-  type GlobalErrorComponent,
-} from './error-boundary'
-import { isBot } from '../../shared/lib/router/utils/is-bot'
-import { addBasePath } from '../add-base-path'
-import { AppRouterAnnouncer } from './app-router-announcer'
-import { RedirectBoundary } from './redirect-boundary'
-import { findHeadInCache } from './router-reducer/reducers/find-head-in-cache'
-import { unresolvedThenable } from './unresolved-thenable'
-import { removeBasePath } from '../remove-base-path'
-import { hasBasePath } from '../has-base-path'
-import { getSelectedParams } from './router-reducer/compute-changed-path'
-import type { FlightRouterState } from '../../server/app-render/types'
-import { useNavFailureHandler } from './nav-failure-handler'
-import { useServerActionDispatcher } from '../app-call-server'
-import type { AppRouterActionQueue } from '../../shared/lib/router/action-queue'
 import { prefetch as prefetchWithSegmentCache } from './segment-cache'
-import { getRedirectTypeFromError, getURLFromRedirectError } from './redirect'
-import { isRedirectError, RedirectType } from './redirect-error'
-import { prefetchReducer } from './router-reducer/reducers/prefetch-reducer'
-import { pingVisibleLinks } from './links'
+import { unresolvedThenable } from './unresolved-thenable'
+import { useReducer, useUnwrapState } from './use-reducer'
 
 const globalMutable: {
   pendingMpaPath?: string
@@ -283,6 +285,15 @@ function Router({
   const navigate = useNavigate(dispatch)
   useServerActionDispatcher(dispatch)
 
+  const internalAppRouter = useMemo<InternalAppRouterInstance>(() => {
+    return {
+      navigate: (navigationType, href, scroll, linkInstance) => {
+        setLinkForCurrentNavigation(linkInstance)
+        navigate(href, navigationType, scroll)
+      },
+    }
+  }, [navigate])
+
   /**
    * The app router that is exposed through `useRouter`. It's only concerned with dispatching actions to the reducer, does not hold state.
    */
@@ -320,12 +331,17 @@ function Router({
           },
       replace: (href, options = {}) => {
         startTransition(() => {
-          navigate(href, 'replace', options.scroll ?? true)
+          internalAppRouter.navigate(
+            'replace',
+            href,
+            options.scroll ?? true,
+            null
+          )
         })
       },
       push: (href, options = {}) => {
         startTransition(() => {
-          navigate(href, 'push', options.scroll ?? true)
+          internalAppRouter.navigate('push', href, options.scroll ?? true, null)
         })
       },
       refresh: () => {
@@ -353,7 +369,7 @@ function Router({
     }
 
     return routerInstance
-  }, [actionQueue, dispatch, navigate])
+  }, [actionQueue.state, internalAppRouter])
 
   useEffect(() => {
     // Exists for debugging purposes. Don't use in application code.
@@ -674,11 +690,13 @@ function Router({
             <GlobalLayoutRouterContext.Provider
               value={globalLayoutRouterContext}
             >
-              <AppRouterContext.Provider value={appRouter}>
-                <LayoutRouterContext.Provider value={layoutRouterContext}>
-                  {content}
-                </LayoutRouterContext.Provider>
-              </AppRouterContext.Provider>
+              <InternalAppRouterContext.Provider value={internalAppRouter}>
+                <AppRouterContext.Provider value={appRouter}>
+                  <LayoutRouterContext.Provider value={layoutRouterContext}>
+                    {content}
+                  </LayoutRouterContext.Provider>
+                </AppRouterContext.Provider>
+              </InternalAppRouterContext.Provider>
             </GlobalLayoutRouterContext.Provider>
           </SearchParamsContext.Provider>
         </PathnameContext.Provider>
