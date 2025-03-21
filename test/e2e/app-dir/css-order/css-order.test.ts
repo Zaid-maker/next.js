@@ -29,7 +29,6 @@ const PAGES: Record<
     brokenLoadingDev?: boolean
     requests?: number
     requestsLoose?: number
-    requestsTurbo?: number
   }
 > = {
   first: {
@@ -374,15 +373,10 @@ describe.each(process.env.TURBOPACK ? ['turbo'] : ['strict', 'loose'])(
           const files = await Promise.all(
             Array.from(stylesheets).map((e) => e.getAttribute('href'))
           )
-          // TODO make sure requestsTurbo <= requests
           expect(files).toHaveLength(
-            mode === 'turbo'
-              ? pageInfo.requestsTurbo ||
-                  pageInfo.requestsLoose ||
-                  pageInfo.requests
-              : mode === 'loose'
-                ? pageInfo.requestsLoose || pageInfo.requests
-                : pageInfo.requests
+            mode === 'turbo' || mode === 'loose'
+              ? pageInfo.requestsLoose || pageInfo.requests
+              : pageInfo.requests
           )
         }
         await browser.close()
